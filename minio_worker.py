@@ -1,27 +1,39 @@
 import json
 import time
-from datetime import datetime
 import greenstalk
 import boto3
 import os
+import logging
+from datetime import datetime
 from botocore.client import Config
 from dotenv import load_dotenv
+
+# Configure standard logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
 
 # Load variables from .env file
 load_dotenv()
 
-# Konfigurasi Koneksi (sesuaikan dengan docker-compose)
+# Broker Configuration
 BEANSTALKD_HOST = '127.0.0.1'
 BEANSTALKD_PORT = 11300
 TUBE_NAME = 'raw-data'
 
-# Konfigurasi Data Lake Faiq (Laptop 1) via Ngrok (Rahasia dari .env)
+# MinIO (Data Lake) Configuration via Ngrok
 S3_ENDPOINT = os.getenv('S3_ENDPOINT', 'https://ventral-unfondly-rosalyn.ngrok-free.dev')
 ACCESS_KEY = os.getenv('MINIO_ACCESS_KEY', 'admin')
 SECRET_KEY = os.getenv('MINIO_SECRET_KEY', 'password123')
 BUCKET_NAME = os.getenv('MINIO_BUCKET_NAME', 'narative-datalake')
 
 def setup_s3():
+    """
+    Initializes the Boto3 S3 client for interacting with MinIO.
+    """
     client = boto3.client(
         's3',
         endpoint_url=S3_ENDPOINT,
@@ -33,52 +45,52 @@ def setup_s3():
     return client
 
 def start_worker():
-    # Menyiapkan klien Boto3 S3
+    """
+    Continuous worker loop that consumes jobs from Beanstalkd and loads them into MinIO.
+    Implements Upsert logic to prevent data duplication.
+    """
     s3_client = setup_s3()
     
-    print(f"Menyambungkan ke Beanstalkd di {BEANSTALKD_HOST}:{BEANSTALKD_PORT}...")
+    logger.info(f"Connecting to Beanstalkd broker at {BEANSTALKD_HOST}:{BEANSTALKD_PORT}")
     with greenstalk.Client((BEANSTALKD_HOST, BEANSTALKD_PORT), watch=TUBE_NAME) as client:
-        print(f"Worker siap! Mendengarkan *tube* '{TUBE_NAME}' untuk antrean data baru...")
+        logger.info(f"Worker online. Listening on tube '{TUBE_NAME}' for new payloads...")
         while True:
             try:
-                # Menunggu job baru masuk (script akan berhenti di sini sampai ada job)
+                # Reserve blocks until a job is available
                 job = client.reserve()
-                print(f"\n[+] Menerima Job ID: {job.id}")
+                logger.debug(f"Reserved Job ID: {job.id}")
                 
-                # Mem-parsing isi pesan (diharapkan berformat JSON)
+                # Parse JSON payload
                 data = json.loads(job.body)
                 platform = data.get('platform', 'unknown')
                 author = data.get('author_username', 'unknown')
+                post_id = data.get('post_id', job.id)
                 
-                post_id = data.get('post_id', job.id) # Ambil post_id aslinya
-                
-                # Membuat nama file unik BUKAN berdasarkan waktu, melainkan post_id!
-                # Ini menjamin tidak ada duplikasi data di Data Lake (Upsert logic).
+                # Deterministic Object Key (Upsert Logic)
                 month_folder = datetime.now().strftime("%Y-%m")
                 filename = f"{platform}_{author}_{post_id}.json"
                 folder_path = f"twitter/parsed/{month_folder}/"
                 object_key = f"{folder_path}{filename}"
                 
-                # Mengunggah data JSON ke Data Lake Faiq via Ngrok
+                # Load payload into Data Lake
                 json_bytes = job.body.encode('utf-8')
-                
                 s3_client.put_object(
                     Bucket=BUCKET_NAME,
                     Key=object_key,
                     Body=json_bytes,
                     ContentType='application/json'
                 )
-                print(f"Berhasil menyimpan file {object_key} ke bucket '{BUCKET_NAME}' di Laptop Faiq via Ngrok.")
+                logger.info(f"Successfully loaded {object_key} into Silver layer bucket: {BUCKET_NAME}")
                 
-                # Menghapus job dari antrean Beanstalkd jika sukses disimpan
+                # Acknowledge and delete job from queue
                 client.delete(job)
                 
             except json.JSONDecodeError:
-                print(f"[-] Error: Job {job.id} bukan JSON yang valid. Job dikubur (Bury).")
+                logger.error(f"Malformed JSON payload in Job {job.id}. Burying job.")
                 client.bury(job)
             except Exception as e:
-                print(f"[-] Error saat memproses job: {e}")
-                time.sleep(5) # Berhenti sejenak jika ada error server
+                logger.error(f"Worker encountered an error while processing job: {e}")
+                time.sleep(5)
 
 if __name__ == "__main__":
     start_worker()

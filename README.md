@@ -18,22 +18,45 @@ A robust, enterprise-grade Data Engineering pipeline designed to autonomously in
 ## 🏗️ Architecture Flow
 
 ```mermaid
-graph TD
-    A((Twitter / X API)) -->|Intercept GraphQL| B[twitter_batch_interceptor.py]
-    B -->|Raw JSON| C[(Local Bronze Storage)]
-    
-    C -->|Read Batch| D[twitter_parser.py]
-    D -->|GZIP Compress| C
-    
-    D -->|Clean JSON payload| E[[Beanstalkd Queue]]
-    
-    E -->|Reserve Job| F[minio_worker.py]
-    F -->|Upsert via Boto3| G[(MinIO Data Lake : Silver)]
-    
-    classDef bronze fill:#cd7f32,stroke:#333,stroke-width:2px;
-    classDef silver fill:#c0c0c0,stroke:#333,stroke-width:2px;
-    class C bronze;
-    class G silver;
+flowchart LR
+    %% Defining Node Styles
+    classDef extract fill:#2b3137,stroke:#58a6ff,stroke-width:2px,color:#fff,rx:5px,ry:5px
+    classDef bronze fill:#cd7f32,stroke:#fff,stroke-width:2px,color:#fff,rx:10px,ry:10px
+    classDef silver fill:#c0c0c0,stroke:#333,stroke-width:2px,color:#333,rx:10px,ry:10px
+    classDef queue fill:#e34c26,stroke:#fff,stroke-width:2px,color:#fff,rx:15px,ry:15px
+    classDef ext fill:#1da1f2,stroke:#fff,stroke-width:2px,color:#fff,rx:20px,ry:20px
+    classDef control fill:#2ea043,stroke:#fff,stroke-width:2px,color:#fff,rx:5px,ry:5px
+
+    %% Components
+    API(((Twitter / X API))):::ext
+    Cron{auto_pipeline.py}:::control
+
+    subgraph Extraction Zone [Data Extraction Zone]
+        Interceptor[twitter_batch_interceptor.py\n(Playwright GraphQL Intercept)]:::extract
+    end
+
+    subgraph Bronze Zone [Bronze Data Lake Layer]
+        RawJSON[(Local JSON Storage\nraw_batches/)]:::bronze
+        Parser[twitter_parser.py\n(Schema Normalizer)]:::extract
+        GZIP[(Compressed Archive\n.json.gz)]:::bronze
+    end
+
+    subgraph Silver Zone [Silver Data Lake Layer]
+        Beanstalkd([Beanstalkd\nMessage Broker]):::queue
+        Worker[minio_worker.py\n(Boto3 / Upsert Logic)]:::extract
+        MinIO[(MinIO S3\nData Lake)]:::silver
+    end
+
+    %% Data Flow
+    Cron -.->|Cron Trigger| Interceptor
+    Cron -.->|Cron Trigger| Parser
+    API == GraphQL JSON Payload ==> Interceptor
+    Interceptor -->|Dump| RawJSON
+    RawJSON -->|Read| Parser
+    Parser -->|Archive| GZIP
+    Parser -->|Publish Normalized Payload| Beanstalkd
+    Beanstalkd -->|Reserve Job| Worker
+    Worker == PutObject (Upsert) ==> MinIO
 ```
 
 1. `auto_pipeline.py` triggers the execution based on a scheduled cron-like loop.

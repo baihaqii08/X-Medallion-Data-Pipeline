@@ -1,41 +1,54 @@
 import time
 import subprocess
+import logging
 from datetime import datetime
 
+# Configure standard logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
+
+# Daily Cron Schedule (24-Hour Format: HH:MM)
+JADWAL_SCRAPING = ["09:30", "11:00", "12:30", "14:00", "15:30", "16:50"]
+
 def run_pipeline():
-    print(f"\n=======================================================")
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] MEMULAI SIKLUS SCRAPING OTOMATIS")
-    print(f"=======================================================")
+    """
+    Executes the Extraction (Scraper) and Parsing (Data Cleaning) sequence.
+    """
+    logger.info("=======================================================")
+    logger.info("INITIATING AUTOMATED EXTRACTION CYCLE")
+    logger.info("=======================================================")
     
-    # 1. Menjalankan Pemanen Data (Scraper)
-    print(">> Menjalankan twitter_batch_interceptor.py...")
+    # 1. Execute Extraction Node
+    logger.info("Spawning twitter_batch_interceptor.py process...")
     subprocess.run([".venv\\Scripts\\python.exe", "twitter_batch_interceptor.py"])
     
-    # 2. Menjalankan Pembersih Data (Parser)
-    print("\n>> Scraping selesai. Memulai twitter_parser.py untuk mempublikasikan data...")
+    # 2. Execute Parser Node
+    logger.info("Extraction complete. Spawning twitter_parser.py process...")
     subprocess.run([".venv\\Scripts\\python.exe", "twitter_parser.py"])
     
-    print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Siklus saat ini rampung. Menunggu siklus berikutnya...")
-    print(f"=======================================================\n")
+    logger.info("Extraction cycle finalized. Awaiting next scheduled cron trigger.")
+    logger.info("=======================================================\n")
 
 if __name__ == "__main__":
-    # Jadwal waktu spesifik: Dibuat setiap 1.5 jam (Sangat aman untuk 1 akun, tapi hasilnya 2x lipat lebih banyak!)
-    JADWAL_SCRAPING = ["09:30", "11:00", "12:30", "14:00", "15:30", "16:50"]
+    logger.info("Pipeline Scheduler Initialized.")
+    logger.info("Scheduled execution times:")
+    for schedule in JADWAL_SCRAPING:
+        logger.info(f"   -> {schedule}")
     
-    print("🤖 Auto-Pipeline Aktif! Sistem siap mengeruk data pada jam-jam berikut:")
-    for jadwal in JADWAL_SCRAPING:
-        print(f"   ⏰ {jadwal}")
-    print("\nPastikan minio_worker.py sedang menyala di terminal lain sebagai penangkap data.")
-    print("Menunggu waktu yang ditentukan...")
+    logger.info("Ensure the minio_worker.py daemon is running to consume Beanstalkd queues.")
+    logger.info("Polling clock for scheduled executions...")
     
-    # Looping abadi mengecek waktu setiap menit
+    # Infinite polling loop
     while True:
-        waktu_sekarang = datetime.now().strftime("%H:%M")
+        current_time = datetime.now().strftime("%H:%M")
         
-        if waktu_sekarang in JADWAL_SCRAPING:
+        if current_time in JADWAL_SCRAPING:
             run_pipeline()
-            # Tidur 65 detik untuk memastikan skrip tidak tereksekusi dua kali di menit yang sama
+            # Sleep for 65 seconds to prevent multi-triggering within the same minute
             time.sleep(65) 
         else:
-            # Cek jam lagi setiap 20 detik
             time.sleep(20)
