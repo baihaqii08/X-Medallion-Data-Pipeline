@@ -1,86 +1,88 @@
-# 🚀 Automated Medallion Data Pipeline (Twitter to MinIO)
+# Automated Medallion Data Pipeline (X/Twitter to MinIO)
 
 ![Python](https://img.shields.io/badge/Python-3.11-blue)
 ![Playwright](https://img.shields.io/badge/Playwright-Web_Scraping-green)
 ![Beanstalkd](https://img.shields.io/badge/Beanstalkd-Message_Queue-orange)
 ![MinIO](https://img.shields.io/badge/MinIO-S3_Data_Lake-red)
 
-A robust, enterprise-grade Data Engineering pipeline designed to autonomously intercept, parse, clean, and store high-volume social media data. This project implements the **Medallion Architecture (Bronze & Silver layers)**, utilizing asynchronous message queues and upsert logic to ensure data integrity and zero duplication.
+A data engineering pipeline designed to intercept X (Twitter) GraphQL payloads and orchestrate data flow into a MinIO object storage backend utilizing a Medallion architecture. The system relies on asynchronous message queues for decoupling and implements deterministic object keys for idempotent upserts.
 
-## ✨ Key Features
-- **Network Request Interception:** Bypasses traditional HTML scraping by using Playwright to intercept raw GraphQL API responses, ensuring 100% accuracy and speed.
-- **Auto-Scheduling & Frequency Scaling:** Designed to run intelligently (e.g., every 1.5 hours) to maximize data harvesting while remaining undetected by anti-bot systems.
-- **Distributed Message Queue:** Implements `Beanstalkd` to decouple the data extraction (Scraper) from the data loading (Worker), ensuring fault tolerance.
-- **Upsert Deduplication Logic:** Uses unique `post_id` as S3 Object Keys in MinIO, preventing data duplication while keeping engagement metrics (likes/comments) updated in real-time.
-- **Bronze Layer Compression:** Automatically GZIP compresses raw JSON payloads to save 90% of local disk space while maintaining raw historical data.
-- **Data Validation:** Built-in validation module to filter out NSFW content and spam bots before entering the Silver layer.
-
-## 🏗️ Architecture Flow
+## Architecture
 
 ```mermaid
 flowchart LR
-    %% Defining Node Styles
-    classDef extract fill:#2b3137,stroke:#58a6ff,stroke-width:2px,color:#fff,rx:5px,ry:5px
-    classDef bronze fill:#cd7f32,stroke:#fff,stroke-width:2px,color:#fff,rx:10px,ry:10px
-    classDef silver fill:#c0c0c0,stroke:#333,stroke-width:2px,color:#333,rx:10px,ry:10px
-    classDef queue fill:#e34c26,stroke:#fff,stroke-width:2px,color:#fff,rx:15px,ry:15px
-    classDef ext fill:#1da1f2,stroke:#fff,stroke-width:2px,color:#fff,rx:20px,ry:20px
-    classDef control fill:#2ea043,stroke:#fff,stroke-width:2px,color:#fff,rx:5px,ry:5px
+    %% Minimalist Corporate Styling
+    classDef extract fill:#ffffff,stroke:#333333,stroke-width:1px,color:#000000,rx:2px,ry:2px
+    classDef storage fill:#f9f9f9,stroke:#666666,stroke-width:1px,color:#000000,rx:5px,ry:5px
+    classDef queue fill:#eeeeee,stroke:#666666,stroke-width:1px,color:#000000,rx:10px,ry:10px
+    classDef ext fill:#ffffff,stroke:#000000,stroke-width:2px,color:#000000,rx:20px,ry:20px
+    classDef control fill:#ffffff,stroke:#000000,stroke-width:1px,stroke-dasharray: 5 5,color:#000000
 
     %% Components
-    API(((Twitter / X API))):::ext
-    Cron{"auto_pipeline.py"}:::control
+    API(((X GraphQL API))):::ext
+    Cron{auto_pipeline.py}:::control
 
-    subgraph Extraction Zone [Data Extraction Zone]
-        Interceptor["twitter_batch_interceptor.py<br/>(Playwright GraphQL Intercept)"]:::extract
+    subgraph Extraction Layer
+        Interceptor["twitter_batch_interceptor.py<br/>(Playwright)"]:::extract
     end
 
-    subgraph Bronze Zone [Bronze Data Lake Layer]
-        RawJSON[("Local JSON Storage<br/>raw_batches/")]:::bronze
-        Parser["twitter_parser.py<br/>(Schema Normalizer)"]:::extract
-        GZIP[("Compressed Archive<br/>.json.gz")]:::bronze
+    subgraph Bronze Layer
+        RawJSON[("Local JSON<br/>raw_batches/")]:::storage
+        Parser["twitter_parser.py<br/>(Normalizer)"]:::extract
+        GZIP[("Archive<br/>.json.gz")]:::storage
     end
 
-    subgraph Silver Zone [Silver Data Lake Layer]
-        Beanstalkd(["Beanstalkd<br/>Message Broker"]):::queue
-        Worker["minio_worker.py<br/>(Boto3 / Upsert Logic)"]:::extract
-        MinIO[("MinIO S3<br/>Data Lake")]:::silver
+    subgraph Silver Layer
+        Beanstalkd(["Beanstalkd<br/>(Queue)"]):::queue
+        Worker["minio_worker.py<br/>(Boto3 / Upsert)"]:::extract
+        MinIO[("MinIO S3")]:::storage
     end
 
-    %% Data Flow
-    Cron -.->|Cron Trigger| Interceptor
-    Cron -.->|Cron Trigger| Parser
-    API == GraphQL JSON Payload ==> Interceptor
-    Interceptor -->|Dump| RawJSON
+    %% Flow
+    Cron -.->|Trigger| Interceptor
+    Cron -.->|Trigger| Parser
+    API == Network Intercept ==> Interceptor
+    Interceptor -->|JSON Dump| RawJSON
     RawJSON -->|Read| Parser
-    Parser -->|Archive| GZIP
-    Parser -->|Publish Normalized Payload| Beanstalkd
-    Beanstalkd -->|Reserve Job| Worker
-    Worker == PutObject (Upsert) ==> MinIO
+    Parser -->|Compress| GZIP
+    Parser -->|Publish| Beanstalkd
+    Beanstalkd -->|Consume| Worker
+    Worker == PutObject ==> MinIO
 ```
 
-1. `auto_pipeline.py` triggers the execution based on a scheduled cron-like loop.
-2. `twitter_batch_interceptor.py` (Scraper) mines Twitter Trends via Playwright and dumps the raw JSON into the local `raw_batches` folder (Bronze Layer).
-3. `twitter_parser.py` (Parser) reads the raw batch, normalizes the schema (TikTok unified schema), and pushes it to `Beanstalkd` tube. It then GZIPs the raw file.
-4. `minio_worker.py` (Worker) listens to Beanstalkd, pulls the normalized data, and uploads it to a remote MinIO Data Lake via Ngrok (Silver Layer).
+## Features
+- **GraphQL Interception:** Utilizes Playwright to capture raw network responses, bypassing DOM traversal.
+- **Message Queue Decoupling:** Employs Beanstalkd to separate extraction workloads from I/O bound loading operations.
+- **Idempotency:** Implements deterministic S3 object key generation (`post_id`) to ensure upsert behavior and prevent data duplication.
+- **Storage Optimization:** Applies GZIP compression on raw Bronze layer JSON payloads.
+- **Validation Pipeline:** Integrates a regex-based validation module to filter out NSFW and predefined negative keywords before entering the Silver layer.
 
-## 🚀 How to Run (Local Setup)
+## System Requirements
+- Python 3.11+
+- Beanstalkd daemon
+- MinIO instance (or AWS S3 credentials)
 
-1. Clone this repository.
-2. Create a virtual environment and install dependencies:
+## Local Setup
+
+1. Clone the repository and configure the virtual environment:
    ```bash
    python -m venv .venv
    source .venv/Scripts/activate
    pip install -r requirements.txt
    playwright install chromium
    ```
-3. Copy `.env.example` to `.env` (or create one) and fill in your Twitter Cookies (`auth_token` and `ct0`) and MinIO credentials.
-4. Start your local Beanstalkd service (via Docker).
-5. Start the MinIO Worker in Terminal 1:
+2. Configure environment variables:
+   ```bash
+   cp .env.example .env
+   ```
+   Provide valid Twitter authentication cookies (`TWITTER_AUTH_TOKEN`, `TWITTER_CT0`) and S3 endpoint credentials in the `.env` file.
+   
+3. Execute the worker process (Terminal 1):
    ```bash
    python minio_worker.py
    ```
-6. Start the Automated Pipeline in Terminal 2:
+   
+4. Execute the pipeline scheduler (Terminal 2):
    ```bash
    python auto_pipeline.py
    ```
