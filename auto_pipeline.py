@@ -1,54 +1,123 @@
-import time
-import subprocess
+import argparse
 import logging
+import os
+import subprocess
+import sys
+import time
 from datetime import datetime
+from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-# Configure standard logging
+from settings import load_environment
+
+
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
 
-# Daily Cron Schedule (24-Hour Format: HH:MM)
-JADWAL_SCRAPING = ["09:30", "11:00", "12:30", "14:00", "15:30", "16:50"]
+load_environment()
+PROJECT_DIR = Path(__file__).resolve().parent
 
-def run_pipeline():
-    """
-    Executes the Extraction (Scraper) and Parsing (Data Cleaning) sequence.
-    """
-    logger.info("=======================================================")
-    logger.info("INITIATING AUTOMATED EXTRACTION CYCLE")
-    logger.info("=======================================================")
-    
-    # 1. Execute Extraction Node
-    logger.info("Spawning twitter_batch_interceptor.py process...")
-    subprocess.run([".venv\\Scripts\\python.exe", "twitter_batch_interceptor.py"])
-    
-    # 2. Execute Parser Node
-    logger.info("Extraction complete. Spawning twitter_parser.py process...")
-    subprocess.run([".venv\\Scripts\\python.exe", "twitter_parser.py"])
-    
-    logger.info("Extraction cycle finalized. Awaiting next scheduled cron trigger.")
-    logger.info("=======================================================\n")
+
+def parse_schedule(value: str) -> set[str]:
+    entries = set()
+    for raw_entry in value.split(","):
+        entry = raw_entry.strip()
+        if not entry:
+            continue
+        try:
+            parsed = datetime.strptime(entry, "%H:%M")
+        except ValueError as exc:
+            raise ValueError(f"Invalid schedule time {entry!r}; expected HH:MM") from exc
+        entries.add(parsed.strftime("%H:%M"))
+    return entries
+
+
+def pipeline_timezone() -> ZoneInfo:
+    name = os.getenv("PIPELINE_TIMEZONE", os.getenv("DATA_TIMEZONE", "UTC"))
+    try:
+        return ZoneInfo(name)
+    except ZoneInfoNotFoundError as exc:
+        raise RuntimeError(f"Unknown PIPELINE_TIMEZONE: {name}") from exc
+
+
+def run_script(script_name: str, *arguments: str) -> None:
+    command = [sys.executable, str(PROJECT_DIR / script_name), *arguments]
+    logger.info("Running: %s", " ".join(command))
+    subprocess.run(command, cwd=PROJECT_DIR, check=True)
+
+
+def run_ingestion_cycle() -> None:
+    logger.info("Starting extraction and Bronze-to-Silver publish cycle")
+    run_script("twitter_batch_interceptor.py")
+    run_script("twitter_parser.py")
+    logger.info("Ingestion cycle completed successfully")
+
+
+def run_gold_cycle(target_date: str) -> None:
+    logger.info("Starting Silver-to-Gold aggregation for %s", target_date)
+    run_script("gold_aggregator.py", "--date", target_date)
+
+
+def run_scheduler() -> None:
+    ingestion_schedule = parse_schedule(
+        os.getenv("PIPELINE_SCHEDULE", "09:30,11:00,12:30,14:00,15:30,16:50")
+    )
+    gold_schedule = parse_schedule(os.getenv("GOLD_SCHEDULE", "23:55"))
+    timezone = pipeline_timezone()
+    poll_seconds = int(os.getenv("SCHEDULER_POLL_SECONDS", "20"))
+    if poll_seconds < 1:
+        raise ValueError("SCHEDULER_POLL_SECONDS must be at least 1")
+    completed_slots: set[str] = set()
+
+    logger.info(
+        "Scheduler online: timezone=%s ingestion=%s gold=%s",
+        timezone,
+        sorted(ingestion_schedule),
+        sorted(gold_schedule),
+    )
+    while True:
+        now = datetime.now(timezone)
+        time_slot = now.strftime("%H:%M")
+        date_key = now.date().isoformat()
+
+        ingestion_key = f"ingestion:{date_key}:{time_slot}"
+        if time_slot in ingestion_schedule and ingestion_key not in completed_slots:
+            try:
+                run_ingestion_cycle()
+            except subprocess.CalledProcessError:
+                logger.exception("Ingestion cycle failed; parser or downstream stages were stopped")
+            finally:
+                completed_slots.add(ingestion_key)
+
+        gold_key = f"gold:{date_key}:{time_slot}"
+        if time_slot in gold_schedule and gold_key not in completed_slots:
+            try:
+                run_gold_cycle(date_key)
+            except subprocess.CalledProcessError:
+                logger.exception("Gold aggregation failed")
+            finally:
+                completed_slots.add(gold_key)
+
+        completed_slots = {key for key in completed_slots if f":{date_key}:" in key}
+        time.sleep(poll_seconds)
+
 
 if __name__ == "__main__":
-    logger.info("Pipeline Scheduler Initialized.")
-    logger.info("Scheduled execution times:")
-    for schedule in JADWAL_SCRAPING:
-        logger.info(f"   -> {schedule}")
-    
-    logger.info("Ensure the minio_worker.py daemon is running to consume Beanstalkd queues.")
-    logger.info("Polling clock for scheduled executions...")
-    
-    # Infinite polling loop
-    while True:
-        current_time = datetime.now().strftime("%H:%M")
-        
-        if current_time in JADWAL_SCRAPING:
-            run_pipeline()
-            # Sleep for 65 seconds to prevent multi-triggering within the same minute
-            time.sleep(65) 
-        else:
-            time.sleep(20)
+    parser = argparse.ArgumentParser(description="Orchestrate the X Medallion pipeline")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--once", action="store_true", help="Run one ingestion cycle and exit")
+    mode.add_argument("--gold-only", action="store_true", help="Run only Gold aggregation")
+    parser.add_argument("--date", help="Gold date in YYYY-MM-DD format")
+    args = parser.parse_args()
+
+    if args.once:
+        run_ingestion_cycle()
+    elif args.gold_only:
+        target = args.date or datetime.now(pipeline_timezone()).date().isoformat()
+        run_gold_cycle(target)
+    else:
+        run_scheduler()

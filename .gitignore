@@ -5,14 +5,21 @@ __pycache__/
 .venv/
 venv/
 ENV/
+.pytest_cache/
+.coverage
+htmlcov/
 
-# Environment Variables (SECRETS)
+# Secrets
 .env
 
-# Data Lake Local Storage
+# Local data and browser state
 raw_batches/
-*.json
-*.json.gz
-
-# Playwright / Scraper Temp Files
 twitter_profile/
+*.json.tmp
+*.json.gz.tmp
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
