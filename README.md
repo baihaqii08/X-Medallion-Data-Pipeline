@@ -29,22 +29,22 @@ flowchart LR
 
     %% Components
     API(((Twitter / X API))):::ext
-    Cron{auto_pipeline.py}:::control
+    Cron{"auto_pipeline.py"}:::control
 
     subgraph Extraction Zone [Data Extraction Zone]
-        Interceptor[twitter_batch_interceptor.py\n(Playwright GraphQL Intercept)]:::extract
+        Interceptor["twitter_batch_interceptor.py<br/>(Playwright GraphQL Intercept)"]:::extract
     end
 
     subgraph Bronze Zone [Bronze Data Lake Layer]
-        RawJSON[(Local JSON Storage\nraw_batches/)]:::bronze
-        Parser[twitter_parser.py\n(Schema Normalizer)]:::extract
-        GZIP[(Compressed Archive\n.json.gz)]:::bronze
+        RawJSON[("Local JSON Storage<br/>raw_batches/")]:::bronze
+        Parser["twitter_parser.py<br/>(Schema Normalizer)"]:::extract
+        GZIP[("Compressed Archive<br/>.json.gz")]:::bronze
     end
 
     subgraph Silver Zone [Silver Data Lake Layer]
-        Beanstalkd([Beanstalkd\nMessage Broker]):::queue
-        Worker[minio_worker.py\n(Boto3 / Upsert Logic)]:::extract
-        MinIO[(MinIO S3\nData Lake)]:::silver
+        Beanstalkd(["Beanstalkd<br/>Message Broker"]):::queue
+        Worker["minio_worker.py<br/>(Boto3 / Upsert Logic)"]:::extract
+        MinIO[("MinIO S3<br/>Data Lake")]:::silver
     end
 
     %% Data Flow
@@ -84,6 +84,3 @@ flowchart LR
    ```bash
    python auto_pipeline.py
    ```
-
-## 🛡️ Disclaimer
-This project was built as a Data Engineering portfolio piece. All sensitive configurations and credentials have been strictly ignored via `.gitignore` and `.env`. 
