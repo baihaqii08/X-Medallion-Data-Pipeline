@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+
+# Environment Variables (SECRETS)
+.env
+
+# Data Lake Local Storage
+raw_batches/
+*.json
+*.json.gz
+
+# Playwright / Scraper Temp Files
+twitter_profile/

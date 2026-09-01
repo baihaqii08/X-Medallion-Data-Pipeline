@@ -1,0 +1,5 @@
+greenstalk==2.0.2
+minio==7.2.7
+playwright==1.45.1
+
+python-dotenv
